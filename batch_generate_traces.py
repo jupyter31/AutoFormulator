@@ -49,7 +49,7 @@ def parse_args():
     parser.add_argument('--data-file', type=str, default='data/NL4OPT.json',
                         help='Path to data file')
     parser.add_argument('--engine', type=str, default='gpt-4o',
-                        help='Engine to use (uses DEPLOYMENT_NAME from settings)')
+                        help='Engine/model to use (e.g., gpt-4o, tinker://..., ollama:deepseek-r1:8b)')
     parser.add_argument('--n-reward', type=int, default=3,
                         help='Number of reward evaluations')
     parser.add_argument('--n-used-gpt', type=int, default=4,
