@@ -35,6 +35,12 @@ def _parse_args() -> argparse.Namespace:
         required=True,
         help="The problem index (between 0 and 20).",
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="GPT4o",
+        help="The model to use (e.g., GPT4o, tinker://...).",
+    )
     # Original commented argument preserved for reference:
     # parser.add_argument('--gpt', type=str, choices=['GPT4o', 'GPT4o-mini-1'], required=True, help="The optimization type.")
     return parser.parse_args()
@@ -71,7 +77,7 @@ def _extract_problem(df: pd.DataFrame, index: int):
     return problem_str, ground_truth, problem_idx
 
 
-def _run_single_experiment(index: int) -> None:
+def _run_single_experiment(index: int, model: str) -> None:
     """
     Run a single NL4OPT experiment using MCTS, preserving original behavior.
 
@@ -79,6 +85,8 @@ def _run_single_experiment(index: int) -> None:
     ----------
     index : int
         Problem row index to run.
+    model : str
+        Model name to use.
     """
     # Preserved path names
     this_dir = "NL4OPT"
@@ -89,7 +97,7 @@ def _run_single_experiment(index: int) -> None:
     problem_str, ground_truth, problem_idx = _extract_problem(df, index)
 
     # Construct output directory for this problem and run MCTS
-    this_mcts = MCTS()
+    this_mcts = MCTS(engine_used=model)
     this_mcts.dfs_from_scratch(
         problem_str,
         f"{results_dir}/problem_{problem_idx}",
@@ -101,4 +109,4 @@ def _run_single_experiment(index: int) -> None:
 # The original module executed immediately upon import (argparse + run).
 # To keep behavior identical, we still trigger execution at import time.
 _args = _parse_args()
-_run_single_experiment(_args.index)
+_run_single_experiment(_args.index, _args.model)

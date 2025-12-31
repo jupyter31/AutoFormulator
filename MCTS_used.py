@@ -46,6 +46,7 @@ from utils_metrics import (
     obtain_prompt_solution_score_sol,
     obtain_prompt_solution_score_sol_partial,
 )
+from mcts_tracer import get_tracer
 
 # =========================
 # Constants (unchanged)
@@ -446,6 +447,12 @@ class ReasoningMCTSNode(MCTSNode):
 
         self.form_dict_str = form_dict_str
         self.form_dict_eval = form_dict_eval
+        
+        # Log node creation
+        tracer = get_tracer()
+        node_id = tracer.get_node_id(self)
+        parent_id = tracer.get_node_id(parent) if parent else None
+        tracer.log_node_creation(node_id, depth, self.this_step or "root", parent_id)
 
         # Preserve original equality constraints special-case file writes
         if self.this_step == "equality_constraints":
@@ -522,6 +529,32 @@ class ReasoningMCTSNode(MCTSNode):
                 self.save_json(form_dict_eval, "A-form_eval", transform_json=True)
             except Exception:
                 self.not_empty = False
+        
+        # Log formulation and code execution
+        if depth > 0 and self.this_step:
+            tracer = get_tracer()
+            node_id = tracer.get_node_id(self)
+            tracer.log_formulation(
+                node_id, 
+                self.this_step, 
+                self.form_dict_str.get(self.this_step, ""),
+                self.form_dict_eval.get(self.this_step, {})
+            )
+            
+            # Log code execution if applicable
+            if self.this_step in EXECUTABLE_STEPS and hasattr(self, 'output_str'):
+                code_str_log = ""
+                try:
+                    code_str_log = create_code_str(self.form_dict_eval, variables_included=self.this_step)
+                except Exception:
+                    pass
+                tracer.log_code_execution(
+                    node_id,
+                    code_str_log,
+                    getattr(self, 'output_str', ''),
+                    self.is_node_correct,
+                    None if self.is_node_correct else "Execution failed"
+                )
 
     def get_count_node(self):
         if self.this_step == "inequality_constraints":
@@ -589,6 +622,15 @@ class ReasoningMCTSNode(MCTSNode):
         prompt_to_gpt = self.create_prompt_gpt()
         response = chat_gpt(user_prompt=prompt_to_gpt, n_used=self.n_used_gpt, engine_used=self.engine_used)
         n_gen = self.n_used_gpt
+        
+        # Log LLM call
+        tracer = get_tracer()
+        node_id = tracer.get_node_id(self)
+        # Log all responses concatenated
+        all_responses = "\n\n---RESPONSE SEPARATOR---\n\n".join(
+            [response.choices[idx].message.content for idx in range(n_gen)]
+        )
+        tracer.log_llm_call(node_id, prompt_to_gpt, all_responses, "generation")
 
         all_form_str = []
         all_form_eval = []
@@ -720,27 +762,58 @@ class ReasoningMCTSNode(MCTSNode):
 
         no_empty_children, empty_children = self._get_not_empty_children(possible_children)
         self.rename_children(empty_children, "z-empty")
+        # Log empty children
+        tracer = get_tracer()
+        for child in empty_children:
+            tracer.log_node_outcome(tracer.get_node_id(child), "empty", "Empty formulation")
 
         correct_children, incorrect_children = self._get_correct_children(no_empty_children)
         self.save_results_children(incorrect_children, "output_incorrect_children")
         self.rename_children(incorrect_children, "z-incorrect")
+        # Log incorrect children
+        for child in incorrect_children:
+            tracer.log_node_outcome(tracer.get_node_id(child), "incorrect", "Syntax or execution error")
 
         unique_children, discarded_children = self._get_unique_children(correct_children)
         self.save_results_children(unique_children, "children_unique")
         self.rename_children(discarded_children, "z-clustered")
+        # Log clustered children
+        for child in discarded_children:
+            tracer.log_node_outcome(tracer.get_node_id(child), "clustered", "Functionally equivalent to another solution")
 
         all_rewards, _ = self._get_children_reward(unique_children)
         self.save_rewards(unique_children, all_rewards)
 
         lowest_reward_children = []
         highest_rewards = np.sort(all_rewards)[::-1][: self.n_top]
+        
+        # Track selected and pruned children for logging
+        selected_ids = []
+        pruned_ids = []
+        rewards_dict = {}
+        
         for this_node, this_reward in zip(unique_children, all_rewards):
             this_node.update_reward(this_reward)
+            node_id = tracer.get_node_id(this_node)
+            rewards_dict[node_id] = float(this_reward)
+            tracer.log_node_reward(node_id, float(this_reward), "local")
+            
             if this_reward in highest_rewards:
                 self.children += [this_node]
+                selected_ids.append(node_id)
+                tracer.log_node_outcome(node_id, "selected", f"Reward {this_reward:.4f} in top {self.n_top}")
             else:
                 lowest_reward_children += [this_node]
+                pruned_ids.append(node_id)
+                tracer.log_node_outcome(node_id, "low_scored", f"Reward {this_reward:.4f} below top {self.n_top}")
+        
         self.rename_children(lowest_reward_children, "low-scored")
+        
+        # Log expansion details
+        all_child_ids = [tracer.get_node_id(c) for c in possible_children]
+        parent_id = tracer.get_node_id(self)
+        tracer.log_expansion(parent_id, all_child_ids, selected_ids, pruned_ids, rewards_dict)
+        
         return self.children
 
     def save_children_outputs(self, possible_children):
@@ -776,8 +849,13 @@ class ReasoningMCTSNode(MCTSNode):
         self.save_json(all_dict, "children_rewards_idx")
 
     def rename_children(self, these_children, add_name):
+        import shutil
         for child in these_children:
-            os.rename(child.this_dir, modify_directory(child.this_dir, add_name))
+            new_path = modify_directory(child.this_dir, add_name)
+            # Remove target if it exists (Windows compatibility)
+            if os.path.exists(new_path):
+                shutil.rmtree(new_path, ignore_errors=True)
+            os.rename(child.this_dir, new_path)
 
     def find_children(self, n_used_this=None):
         self.children = self.children or self._get_children()
@@ -953,6 +1031,12 @@ class MCTS:
     def dfs_from_scratch(self, problem_description, path, ground_truth=None):
         self.path = path
         self.ground_truth = ground_truth
+        
+        # Initialize tracer
+        tracer = get_tracer()
+        problem_id = os.path.basename(path)
+        tracer.start_problem(problem_id, problem_description, path, ground_truth)
+        
         dummy_node = ReasoningMCTSNode(
             problem_description,
             path,
@@ -966,14 +1050,32 @@ class MCTS:
         collected_path = []
         self.dfs(dummy_node, collected_path=collected_path, collected_prior_reward=collected_prior_reward)
         self.save_node(dummy_node, path)
+        
+        # Save trace
+        tracer.save_trace()
+        tracer.clear_current()
+        self.save_node(dummy_node, path)
 
     def dfs(self, node, collected_path=[], collected_prior_reward=[]):
         collected_path = self.update_path_list(node, collected_path)
         collected_prior_reward = self.update_prior_reward(node, collected_prior_reward)
         self._expand(node)
         print("depth, ", node.this_step)
+        
         if node.this_step == "inequality_constraints":
             self.update_collected_data(self.path, collected_prior_reward.copy(), collected_path.copy(), node.output_str)
+            
+            # Log complete DFS path
+            tracer = get_tracer()
+            path_nodes = []
+            current = node
+            while current is not None:
+                path_nodes.insert(0, tracer.get_node_id(current))
+                current = current.parent
+            tracer.log_search_path(path_nodes, "dfs", sum(collected_prior_reward))
+            
+            # Log terminal node outcome
+            tracer.log_node_outcome(tracer.get_node_id(node), "terminal", "Reached final step")
             return
 
         for child in node.children:
@@ -1171,6 +1273,17 @@ class MCTS:
                 self.update_baselines_results()
 
         self._back_propagate(path, reward=reward)
+        
+        # Log rollout path
+        tracer = get_tracer()
+        path_nodes = [tracer.get_node_id(n) for n in path]
+        path_type = "winning" if is_achieve_solution else "discarded"
+        tracer.log_search_path(path_nodes, path_type, float(reward))
+        
+        # Update final result if this is the best so far
+        if is_achieve_solution:
+            tracer.set_final_result("success", float_output_node, path_nodes)
+        
         return effective
 
     def _select_prior(self, node: MCTSNode, not_create_children=False):
