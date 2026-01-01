@@ -105,6 +105,7 @@ def chat_gpt(
     # Build request dict for the client
     request = {
         "messages": messages if messages else [{"role": "user", "content": user_prompt or system_prompt}],
+        "stream": True if client_type == "ollama" else False,  # Enable streaming for Ollama
     }
     
     if seed is not None:

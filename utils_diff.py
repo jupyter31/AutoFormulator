@@ -206,13 +206,15 @@ def extract_equivalence_value(input_string):
 
 
 def execute_python_code(code_str, python_filename = "temp_script.py", output_filename="output.txt"):
+    import sys
     # Write the Python code to a temporary file
     with open(python_filename, "w") as script_file:
         script_file.write(code_str)
 
     # Execute the script and redirect output to a text file
+    # Use sys.executable to get the current Python interpreter
     with open(output_filename, "w") as output_file:
-        subprocess.run(["python3", python_filename], stdout=output_file, stderr=subprocess.STDOUT)
+        subprocess.run([sys.executable, python_filename], stdout=output_file, stderr=subprocess.STDOUT)
 
     # Read the output from the text file into a variable
     with open(output_filename, "r") as output_file:

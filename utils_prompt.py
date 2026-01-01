@@ -303,16 +303,33 @@ def extract_dict_from_string(input_string, this_step):
 def extract_dictionary_content(s):
     """
     Extracts the content of the dictionary assigned to formalization_dict[...] from the given string.
+    Now more robust to handle:
+    - CoT reasoning text before the code (already supported)
+    - Malformed bracket syntax like ['key'] written on separate line
+    - Extra whitespace or formatting issues
 
     Parameters:
         s (str): The input string containing the dictionaries.
 
     Returns:
-        dict: A dictionary where keys are the keys inside formalization_dict and values are the extracted dictionary contents as strings.
+        str: The extracted dictionary content as a string, or None if not found.
     """
-    # Pattern to find assignments to formalization_dict[...]
+    # First, preprocess to fix common malformations from finetuned models
+    s_fixed = s
+    
+    # Fix pattern: [formalization_dict]\n['key'] = { ... }
+    # Replace with: formalization_dict['key'] = { ... }
+    s_fixed = re.sub(r'\[formalization_dict\]\s*\n\s*\[([^\]]+)\]\s*=', r"formalization_dict[\1] =", s_fixed)
+    
+    # Fix pattern: ['key'] = (without formalization_dict prefix on same/previous line)
+    # Look for standalone ['something'] = { that should be formalization_dict['something'] = {
+    if 'formalization_dict' not in s_fixed or (s_fixed.find('[\'') < s_fixed.find('formalization_dict')):
+        s_fixed = re.sub(r"^\s*\[(['\"][^'\"]+['\"])\]\s*=\s*{", r"formalization_dict[\1] = {", s_fixed, flags=re.MULTILINE)
+    
+    # Now try standard pattern: formalization_dict['key'] or formalization_dict["key"]
     pattern = r"formalization_dict\[(.+?)\]\s*=\s*{"
-    matches = re.finditer(pattern, s)
+    matches = list(re.finditer(pattern, s_fixed))
+    
     extracted_dicts = {}
 
     for match in matches:
@@ -321,8 +338,8 @@ def extract_dictionary_content(s):
         start = match.end() - 1
         stack = []
         pos = start
-        while pos < len(s):
-            char = s[pos]
+        while pos < len(s_fixed):
+            char = s_fixed[pos]
             if char == '{':
                 stack.append('{')
             elif char == '}':
@@ -337,10 +354,10 @@ def extract_dictionary_content(s):
             continue
 
         # Extract the dictionary content
-        dict_content = s[start:end]
+        dict_content = s_fixed[start:end]
         extracted_dicts[key] = dict_content.strip()
 
-    return dict_content.strip()
+    return dict_content.strip() if extracted_dicts else None
 
 
 def parse_dictionaries_from_string(input_string):
